@@ -1,0 +1,20 @@
+# default config for local ollama via the host relay
+base_url: http://172.17.0.1:11435/v1
+model: qwen3:8b
+api_key: local
+
+max_steps: 20
+max_tokens: 4096
+temperature: 0.0
+timeout: 300
+
+# transient failures (429/5xx/network): exponential backoff + jitter, Retry-After aware
+max_retries: 5
+retry_base_delay: 1.0
+retry_max_delay: 30.0
+
+context_window: 32768
+max_tool_result_chars: 12000
+# count_tokens: true   # 精确 token 预算（需 pip install tiktoken）；默认 false 按字符
+workdir: .
+trace_path: ""

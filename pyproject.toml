@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-harness"
+version = "0.1.0"
+description = "A minimal, model-agnostic agent harness over any OpenAI-compatible endpoint."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "httpx>=0.27",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+serve = ["websockets>=12.0"]
+
+[project.scripts]
+agent-harness = "agent_harness.__main__:main"
+
+[tool.setuptools]
+packages = ["agent_harness"]
