@@ -42,6 +42,20 @@ class Config:
     context_window: int = 32768      # budget for kept messages (chars, or tokens if count_tokens)
     max_tool_result_chars: int = 12000  # truncate a single oversized tool result
     count_tokens: bool = False       # opt-in: count the window in exact tokens (needs tiktoken)
+
+    # Verification gate: the agent is not trusted to say "done". When set,
+    # verify_command runs in workdir before a final answer is accepted; a
+    # non-zero exit feeds its output back to the model for another attempt.
+    verify_command: str = ""         # empty => no gate
+    verify_timeout: float = 120.0
+    max_verify_rounds: int = 2
+
+    # Two-level context compaction: summarize old messages instead of just
+    # dropping them. Opt-in because it costs one extra LLM call per compaction.
+    compact: bool = False
+    compact_keep_recent: int = 4
+    compact_after_messages: int = 12
+
     workdir: str = "."
     trace_path: str = ""             # empty => no trace file
     system_prompt: str = DEFAULT_SYSTEM_PROMPT

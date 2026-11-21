@@ -77,7 +77,20 @@ python examples/run_demo.py --model qwen3:8b \
 复测，然后**在 harness 之外独立跑一次 pytest** 验证。退出码 0 当且仅当
 独立验证通过——不看 agent 自己说的 "tests pass"。
 
-## 配置
+### 验收关口（verify_command）
+
+不让模型自己宣布成功：给 `verify_command` 配一条命令（通常是跑测试），
+harness 在每次最终答复前真的执行它，退出码非 0 就把输出回灌给模型再修一轮。
+`examples/verify_demo.py` 用脚本化 LLM 演示了完整闭环——模型先谎报 "done"，
+被真 pytest 打回、回灌失败输出、改对代码、再验通过：
+
+```bash
+python examples/verify_demo.py
+```
+
+退出码来自 shell 哨兵（`cmd ; echo __AH_VERIFY_EXIT__=$?`），所以无论工具把
+stdout/stderr 怎么合并，harness 都能可靠判定通过与否。配置示例见
+`config.example.yaml`。
 
 优先级：dataclass 默认值 → YAML 文件 → `AGENT_*` 环境变量（环境变量最高）。
 
@@ -96,6 +109,12 @@ python examples/run_demo.py --model qwen3:8b \
 | `context_window` | `32768` | 送进模型的预算，超了先截 tool 输出再丢旧消息（字符或 token，见下） |
 | `max_tool_result_chars` | `12000` | 单个 tool 结果最多保留的字符数 |
 | `count_tokens` | `false` | `true` 时 `context_window` 按**精确 token** 计（需 `pip install tiktoken`） |
+| `verify_command` | `""` | 非空则作为**验收关口**：模型给最终答复前先跑它，退出码非 0 就把输出回灌让模型重试 |
+| `max_verify_rounds` | `2` | 验收失败时最多回灌重试几轮 |
+| `verify_timeout` | `120` | 验收命令超时（秒） |
+| `compact` | `false` | `true` 启用**两级上下文压缩**：历史将被丢弃前先用模型摘要保留关键事实（多一次 LLM 调用） |
+| `compact_after_messages` | `12` | 消息数达到该值才开始考虑压缩 |
+| `compact_keep_recent` | `4` | 压缩时保留最近多少条消息不摘要 |
 | `workdir` | `.` | 工具（bash/read_file/write_file）的工作目录 |
 | `trace_path` | `""` | 非空则把轨迹写到这里（JSONL） |
 
@@ -118,18 +137,20 @@ agent_harness/
   config.py    配置加载（dataclass / yaml / env 三层）
   llm.py       OpenAI 兼容 /chat/completions 客户端（httpx，非流式）
   tools.py     工具 schema + 实现（bash / read_file / write_file）
-  context.py   上下文裁剪：超限先截 tool 输出，再丢最旧消息
-  agent.py     Agent 主循环：LLM → tool_calls → 执行 → 回灌 → 下一步
+  context.py   上下文：超限先截 tool 输出 → 丢最旧消息；compact 再补一级"模型摘要"
+  agent.py     Agent 主循环：LLM → tool_calls → 执行 → 回灌 → 验收关口 → 下一步
   trace.py     JSONL 轨迹记录
   serve.py     PLE v1 WebSocket 服务端（工具在远端容器执行）
   __main__.py  CLI 入口
 config.example.yaml
-tests/                     单元测试（66 个，纯 mock，不依赖模型端点）
+tests/                     单元测试（74 个，纯 mock，不依赖模型端点）
 tests/serve_smoke.py       mock 评测器，端到端自测 serve 层
 tests/test_multistep_e2e.py  脚本化 LLM 驱动的多步 bugfix 端到端测试
 examples/run_demo.py       多步 bugfix 演示（用真实 ollama 模型）
 examples/scripted_demo.py  同一任务，用脚本化 LLM 驱动（确定性，证明主循环正确）
+examples/verify_demo.py    验收关口演示：模型谎报→测试打回→修复→再验通过
 examples/bugfix-project/   演示用 fixture 项目
+docs/harness-survey.md     GitHub 主流 harness 与 PLE 模板设计调研
 ```
 
 ## 已知行为与取舍
@@ -141,6 +162,8 @@ examples/bugfix-project/   演示用 fixture 项目
 - **单轮无并发**：一个 task 一个 agent，没有多 agent / 并行工具；需要可扩展时在这个骨架上加。
 - **模型能力决定多步任务的成败**：harness 只提供正确的工具循环与验证，不会替模型补齐推理。实测本机三个小模型在多步 bugfix 上全败：qwen2.5:7b 把操作写成伪代码文本、写文件时丢掉未改的行；qwen2.5-coder:14b 把 tool_call 塞进 content 字符串；qwen3:8b 写出语法错误的文件。同一个 qwen2.5:7b 在单步的 serve smoke 任务上却通过。这是模型侧瓶颈，不是 harness 缺陷。
 - **多步主循环已用脚本化 LLM 证明正确**：`examples/scripted_demo.py` 用一个进程内假端点按固定顺序返回 tool_calls（读文件 → 整文件覆盖修复 → 跑 pytest → 收尾），驱动真实 Agent 跑完 4 步 3 次工具调用，独立 pytest `3 passed`。这把"多步能不能成"与本机模型能力完全解耦——挂掉的是小模型，不是 harness。同一验证固化为回归测试 `tests/test_multistep_e2e.py`。要验证换更强模型的效果，改 `examples/run_demo.py` 的 `--model`/`--base-url` 即可。
+- **验收关口防谎报**：设 `verify_command` 后，模型每次给出最终答复前 harness 都真跑一遍该命令；退出码非 0 就把输出回灌给模型再修，最多 `max_verify_rounds` 轮。退出码用 shell 哨兵 `; echo __AH_VERIFY_EXIT__=$?` 从合并输出里抽，不受 stdout/stderr 混合影响。`max_steps` 用尽时若验收通过仍判成功。`examples/verify_demo.py` 端到端演示了"谎报 done→pytest 打回→修复→再验通过"，`verify_rounds=2`、独立 pytest 3 passed。
+- **两级上下文压缩**：`compact: true` 时，历史将被 `fit()` 丢弃前先用模型摘要成一条短 note（保留文件路径、失败、待办），系统提示与最近 `compact_keep_recent` 条原样保留；摘要调用失败自动回退到普通 `fit()`。这补上了"只截断丢弃"会丢失长任务历史的问题，代价是每次压缩多一次 LLM 调用。默认关闭。
 - **系统提示词要短**：qwen2.5:7b 在 `temperature=0` 下，若 system prompt 含 "Verify your work by running the project's tests ... and fix whatever fails" 一类句子，会直接空回复（`content=''`, `tool_calls=0`），5/5 可复现；删掉该句即恢复。默认提示词已避开。
 
 ## 与竞赛的关系

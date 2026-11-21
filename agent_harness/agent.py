@@ -3,12 +3,24 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
-from .context import fit, tool_result, token_sizer
+from .context import compact, fit, should_compact, tool_result, token_sizer
 from .llm import LLM, LLMError
 from .tools import ToolError
 from .trace import Tracer
+
+# The verifier is a shell command; append a sentinel so its exit code survives
+# bash-tool output (which otherwise merges stdout/stderr into one string).
+_VERIFY_SENTINEL = "__AH_VERIFY_EXIT__"
+_VERIFY_RE = re.compile(rf"^{_VERIFY_SENTINEL}=(\d+)\s*$", re.MULTILINE)
+
+_SUMMARY_PROMPT = (
+    "Summarize this earlier part of an agent run so work can continue without "
+    "the raw messages. Keep exact file paths, commands, decisions, failures and "
+    "what remains to be done. Drop verbatim logs. Under 300 words."
+)
 
 
 class Agent:
@@ -22,6 +34,64 @@ class Agent:
         # harness has no hard dependency on tiktoken.
         self.sizer = token_sizer() if getattr(config, "count_tokens", False) else None
 
+    def _summarize(self, old_messages: list[dict]) -> str:
+        """LLM-backed callback for context.compact (one small, tool-free call)."""
+        lines = []
+        for m in old_messages:
+            role = m.get("role", "?")
+            content = str(m.get("content", ""))
+            if len(content) > 1500:
+                content = content[:1500] + "...[truncated for summary]"
+            lines.append(f"[{role}] {content}")
+        reply = self.llm.chat([
+            {"role": "system", "content": _SUMMARY_PROMPT},
+            {"role": "user", "content": "\n".join(lines)},
+        ])
+        return (reply.get("content") or "")[:4000]
+
+    def _maybe_compact(self, messages: list[dict]) -> None:
+        """Fold history into a summary before fit() would silently drop it."""
+        if not getattr(self.cfg, "compact", False):
+            return
+        after = getattr(self.cfg, "compact_after_messages", 12)
+        if len(messages) < after:
+            return
+        if not should_compact(
+            messages, self.cfg.context_window, self.cfg.max_tool_result_chars, self.sizer
+        ):
+            return
+        before = len(messages)
+        try:
+            folded = compact(
+                messages, self.cfg.context_window, self.cfg.max_tool_result_chars,
+                self._summarize, sizer=self.sizer,
+                keep_recent=getattr(self.cfg, "compact_keep_recent", 4),
+            )
+        except Exception as exc:
+            self.tracer.log("compact_failed", error=str(exc)[:300])
+            return  # plain fit() still keeps the window valid
+        messages[:] = folded
+        self.tracer.log("compact", before=before, after=len(messages))
+
+    def _verify(self) -> tuple[bool | None, str]:
+        """Run the configured verifier in the task workspace.
+
+        Returns ``(None, "")`` when no verifier is configured, otherwise
+        ``(passed, output)``. The command's exit code is captured via a shell
+        sentinel so it survives the bash tool's merged-output format.
+        """
+        command = (getattr(self.cfg, "verify_command", "") or "").strip()
+        if not command:
+            return None, ""
+        wrapped = f"{command} ; echo {_VERIFY_SENTINEL}=$?"
+        output = self._execute("bash", {"command": wrapped})
+        match = _VERIFY_RE.search(output)
+        if match is None:
+            return False, output + "\n[verifier produced no exit-code sentinel]"
+        passed = match.group(1) == "0"
+        clean = _VERIFY_RE.sub("", output).strip()
+        return passed, clean
+
     def run(self, task: str) -> dict:
         messages: list[dict] = [
             {"role": "system", "content": self.cfg.system_prompt},
@@ -31,13 +101,16 @@ class Agent:
             "answer": "",
             "steps": 0,
             "tool_calls": 0,
+            "verify_rounds": 0,
             "finished": False,
             "error": "",
             "messages": messages,
         }
+        max_verify_rounds = getattr(self.cfg, "max_verify_rounds", 0)
         try:
             for step in range(1, self.cfg.max_steps + 1):
                 result["steps"] = step
+                self._maybe_compact(messages)
                 window = fit(
                     messages, self.cfg.context_window,
                     self.cfg.max_tool_result_chars, sizer=self.sizer,
@@ -48,10 +121,11 @@ class Agent:
 
                 calls = assistant.get("tool_calls") or []
                 if not calls:
-                    result["answer"] = assistant.get("content") or ""
-                    result["finished"] = True
-                    self.tracer.log("final", step=step, answer=result["answer"][:500])
-                    break
+                    self._finish_with_verify(result, messages, step, max_verify_rounds)
+                    if result["finished"] or result["error"]:
+                        break
+                    # verification failed but rounds remain: feedback was appended
+                    continue
 
                 # Some local models emit a whole batch of identical
                 # tool_calls (reproduced: qwen2.5:7b returned 46 copies at
@@ -78,12 +152,54 @@ class Agent:
                     self.tracer.log("tool_call", step=step, name=name, args=args,
                                     output=output[:1000])
             else:
-                result["error"] = f"max_steps ({self.cfg.max_steps}) reached"
-                self.tracer.log("max_steps", step=self.cfg.max_steps)
+                # Out of steps: a passing verifier still counts as success.
+                passed, output = self._verify()
+                if passed:
+                    result["finished"] = True
+                    self.tracer.log("verify", step=result["steps"], passed=True,
+                                    at_max_steps=True)
+                else:
+                    result["error"] = f"max_steps ({self.cfg.max_steps}) reached"
+                    self.tracer.log("max_steps", step=self.cfg.max_steps)
         except LLMError as exc:
             result["error"] = f"LLM error: {exc}"
             self.tracer.log("error", error=result["error"])
         return result
+
+    def _finish_with_verify(self, result: dict, messages: list[dict],
+                            step: int, max_rounds: int) -> None:
+        """Accept a final answer, or feed verification failure back for a retry."""
+        answer = result["answer"] or last_assistant_content(messages)
+        passed, output = self._verify()
+        if passed is None:  # no verifier configured
+            result["answer"] = answer
+            result["finished"] = True
+            self.tracer.log("final", step=step, answer=answer[:500])
+            return
+
+        self.tracer.log("verify", step=step, passed=passed,
+                        round=result["verify_rounds"] + 1, output=output[:500])
+        result["verify_rounds"] += 1
+        if passed:
+            result["answer"] = answer
+            result["finished"] = True
+            self.tracer.log("final", step=step, answer=answer[:500])
+            return
+
+        rounds = result["verify_rounds"]
+        if rounds > max_rounds:
+            result["error"] = (
+                f"verification failed after {max_rounds} round(s): {output[:300]}"
+            )
+            return
+
+        feedback = (
+            "[verification failed] The verifier command failed. Read its output, "
+            "fix the work in the workspace, then finish again.\n"
+            f"--- verifier output ---\n{output[:4000]}"
+        )
+        messages.append({"role": "user", "content": feedback})
+        self.tracer.log("verify_feedback", round=rounds)
 
     @staticmethod
     def _parse_args(raw_args: str) -> dict:
@@ -100,3 +216,10 @@ class Agent:
             return str(impl(**args))
         except (ToolError, TypeError, OSError) as exc:
             return f"[tool error: {exc}]"
+
+
+def last_assistant_content(messages: list[dict]) -> str:
+    for m in reversed(messages):
+        if m.get("role") == "assistant" and m.get("content"):
+            return str(m["content"])
+    return ""

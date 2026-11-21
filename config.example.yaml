@@ -16,5 +16,16 @@ retry_max_delay: 30.0
 context_window: 32768
 max_tool_result_chars: 12000
 # count_tokens: true   # 精确 token 预算（需 pip install tiktoken）；默认 false 按字符
+
+# verification gate: 主循环给出最终答复前先跑该命令，退出码非 0 则回灌输出让模型重试
+# verify_command: "python -m pytest -q tests"
+# max_verify_rounds: 2   # 最多重试轮数
+# verify_timeout: 120
+
+# two-level context compaction: 历史将被丢弃前先用模型摘要保留关键事实（多一次 LLM 调用）
+# compact: true
+# compact_after_messages: 12
+# compact_keep_recent: 4
+
 workdir: .
 trace_path: ""

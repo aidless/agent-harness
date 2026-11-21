@@ -87,3 +87,59 @@ def tool_result(msg: dict, content: str, max_chars: int) -> dict[str, Any]:
     if len(content) > max_chars:
         content = content[:max_chars] + "\n...[truncated]"
     return {"role": "tool", "tool_call_id": msg["id"], "content": content}
+
+
+SUMMARY_PREFIX = "[conversation summary]"
+
+
+def should_compact(
+    messages: list[dict],
+    budget: int,
+    max_result_chars: int,
+    sizer: Callable[[str], int] | None = None,
+) -> bool:
+    """True when ``fit`` would drop at least one message (history is being lost)."""
+    return len(fit(messages, budget, max_result_chars, sizer)) < len(messages)
+
+
+def compact(
+    messages: list[dict],
+    budget: int,
+    max_result_chars: int,
+    summarize: Callable[[list[dict]], str],
+    sizer: Callable[[str], int] | None = None,
+    keep_recent: int = 6,
+) -> list[dict]:
+    """Two-level compaction: fold the oldest history into one model summary.
+
+    ``fit`` only truncates/drops — the dropped part is gone forever. Here the
+    messages that ``fit`` would discard are first handed to ``summarize`` (an
+    LLM-backed callback) and replaced by a single short note, so facts like
+    file paths, failed attempts and open work survive a long run.
+
+    System prompt and the newest ``keep_recent`` messages stay verbatim. If the
+    summary itself is too large, a final ``fit`` keeps the window safe. On any
+    summarizer failure the caller should fall back to plain ``fit``.
+    """
+    fitted = fit(messages, budget, max_result_chars, sizer)
+    if len(fitted) >= len(messages):
+        return list(messages)  # nothing would be lost
+
+    head = [messages[0]] if messages and messages[0].get("role") == "system" else []
+    body = messages[len(head):]
+    if len(body) <= keep_recent:
+        # Too little history to summarize: leave the list intact so the caller
+        # can keep accumulating. Returning `fitted` here would silently drop
+        # messages and prevent compaction from ever reaching its threshold.
+        return list(messages)
+    recent = body[-keep_recent:]
+    old = body[:-keep_recent]
+    if not old:
+        return list(messages)
+
+    note = summarize(old) or ""
+    summary = {
+        "role": "user",
+        "content": f"{SUMMARY_PREFIX}:\n{note.strip()}",
+    }
+    return fit(head + [summary] + recent, budget, max_result_chars, sizer)
