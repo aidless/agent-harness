@@ -170,6 +170,7 @@ docs/harness-survey.md     GitHub 主流 harness 与 PLE 模板设计调研
 - **断点续跑（checkpoint/resume）**：设 `checkpoint_path` 后，每步把 `messages` + 计数器（`steps`/`tool_calls`/`verify_rounds`）原子落盘（临时文件 + `os.replace`，崩溃不留半截文件），崩溃最多丢一步；下次带 `--resume`（或 `resume: true`）同一任务即接着跑，已执行的工具不重放、已完成的回合不重复调模型。checkpoint 里 `task` 不匹配或文件损坏时自动从头开始。CLI 用 `agent-harness task ... --checkpoint run.json --resume`。
 - **serve 层的续跑**：`checkpoint_dir` 非空时，`serve.py` 收到 `task` 帧后按 `session` 字段派生 `checkpoint_path`（如 `<dir>/<session>.json`）并置 `resume=True`；同一 session id 重连即从断点续跑，不同 session 互不干扰。session id 里的 `/`、`\`、`:`、`..` 会被替换成 `_`，防止写出目录。默认空=关闭，CLI 行为不变。
 - **系统提示词要短**：qwen2.5:7b 在 `temperature=0` 下，若 system prompt 含 "Verify your work by running the project's tests ... and fix whatever fails" 一类句子，会直接空回复（`content=''`, `tool_calls=0`），5/5 可复现；删掉该句即恢复。默认提示词已避开。
+- **文本形态的 tool call 兼容**：部分 OpenAI-compatible 端点（实测 Ollama + qwen2.5-coder:7b）不填 `tool_calls`，而是把 `{"name": ..., "arguments": {...}}` 写进 `content`。agent 会严格解析这种形态（整段或逐行 JSON，散文不误判，单行的括号笔误跳过），让自托管模型也能驱动工具循环；原生 `tool_calls` 优先，行为不变。
 
 ## 与竞赛的关系
 

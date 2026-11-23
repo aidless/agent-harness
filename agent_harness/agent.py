@@ -145,6 +145,48 @@ class Agent:
         except (OSError, ValueError, TypeError, KeyError):
             return None
 
+    def _text_tool_calls(self, message: dict) -> list[dict]:
+        """Tool calls some endpoints emit as JSON text in ``content``.
+
+        Ollama's OpenAI-compatible endpoint, with templates that do not render
+        the tools schema, answers ``{"name": ..., "arguments": {...}}`` in the
+        content instead of filling ``tool_calls``. Parse that shape strictly so
+        ordinary prose is never mistaken for a call: the whole content must be
+        one JSON object, or one JSON object per non-empty line.
+        """
+        content = (message.get("content") or "").strip()
+        if not content or '"name"' not in content:
+            return []
+        lines = [line.strip() for line in content.splitlines() if line.strip()]
+        calls: list[dict] = []
+        for line in lines:
+            # A line that looks like a call but has a typo (a real model habit:
+            # one extra closing brace) is skipped; the healthy calls still run.
+            looks_like_call = line.startswith("{") and '"name"' in line and '"arguments"' in line
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                if looks_like_call:
+                    continue
+                return []  # prose, not a tool-call batch
+            if not isinstance(obj, dict):
+                return []
+            name = obj.get("name")
+            args = obj.get("arguments")
+            if not isinstance(name, str) or not name.strip():
+                return []
+            if not isinstance(args, (dict, str)):
+                return []
+            raw = args if isinstance(args, str) else json.dumps(args, ensure_ascii=False)
+            calls.append(
+                {
+                    "id": f"text_{len(calls) + 1}",
+                    "type": "function",
+                    "function": {"name": name, "arguments": raw},
+                }
+            )
+        return calls
+
     def run(self, task: str) -> dict:
         restored = self._restore(task)
         if restored is not None and restored[1]["finished"]:
@@ -177,10 +219,14 @@ class Agent:
                     self.cfg.max_tool_result_chars, sizer=self.sizer,
                 )
                 assistant = self.llm.chat(window, self.tools)
+                calls = assistant.get("tool_calls") or []
+                if not calls:
+                    calls = self._text_tool_calls(assistant)
+                    if calls:
+                        assistant["tool_calls"] = calls
+                        self.tracer.log("text_tool_calls", step=step, count=len(calls))
                 messages.append(assistant)
                 self.tracer.log("llm_reply", step=step, message=assistant)
-
-                calls = assistant.get("tool_calls") or []
                 if not calls:
                     self._finish_with_verify(result, messages, step, max_verify_rounds)
                     if result["finished"] or result["error"]:
