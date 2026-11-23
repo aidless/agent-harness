@@ -60,6 +60,32 @@ def _b64encode(text: str) -> str:
     return base64.b64encode(text.encode("utf-8")).decode("ascii")
 
 
+_UNSAFE_NAME = ("/", "\\", ":", "\0", "..")
+
+
+def _safe_session_name(session) -> str:
+    """A session id becomes a filename: keep it from escaping the directory."""
+    text = str(session or "").strip()
+    for bad in _UNSAFE_NAME:
+        text = text.replace(bad, "_")
+    return text or "session"
+
+
+def session_checkpoint(cfg: Config, task: dict) -> None:
+    """Serve mode: give each session its own checkpoint file.
+
+    Only active when ``checkpoint_dir`` is configured, so the CLI keeps its
+    single fixed ``checkpoint_path`` behaviour. Resuming is opt-in per task:
+    an operator sets the dir, and a repeat of the same session id picks up.
+    """
+    directory = (getattr(cfg, "checkpoint_dir", "") or "").strip()
+    session = task.get("session")
+    if not directory or not session:
+        return
+    cfg.checkpoint_path = os.path.join(directory, _safe_session_name(session) + ".json")
+    cfg.resume = True
+
+
 def serve_config() -> Config:
     """Build the Config from the evaluator environment, then AGENT_* vars."""
     cfg = Config.load(os.environ.get("AGENT_CONFIG") or None)
@@ -207,6 +233,7 @@ async def session(ws) -> None:
     pump_task = asyncio.create_task(rs.pump())
 
     cfg = serve_config()
+    session_checkpoint(cfg, task)
     # Keep each model call well inside the task's remaining time.
     if isinstance(agent_timeout, (int, float)) and agent_timeout > 0:
         cfg.timeout = max(30.0, min(cfg.timeout, float(agent_timeout)))

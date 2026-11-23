@@ -61,6 +61,7 @@ class Config:
     # Checkpoint/resume: persist the loop (messages + counters) so a long task
     # can survive a process restart. Off by default.
     checkpoint_path: str = ""        # empty => no checkpoint
+    checkpoint_dir: str = ""         # serve mode: one checkpoint per session id
     resume: bool = False             # continue from checkpoint_path when it exists
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
 

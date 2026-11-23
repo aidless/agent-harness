@@ -33,3 +33,5 @@ trace_path: ""
 # checkpoint/resume: 每步把 messages+计数器落盘，进程崩溃后 --resume 可续跑
 # checkpoint_path: .agent-checkpoint.json
 # resume: false
+# serve 模式：按 session id 各存一个 checkpoint（设了就自动 --resume）
+# checkpoint_dir: .agent-checkpoints
