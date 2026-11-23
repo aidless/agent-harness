@@ -1,0 +1,4 @@
+Call tools by emitting exactly one JSON object: {"name": ..., "arguments": {...}}.
+arguments.command must be a real shell command. arguments.content must be the COMPLETE real file text.
+Never write placeholders, angle-bracket descriptions, or "...". Wait for each tool result before the next call.
+To finish, reply with one plain sentence, no JSON.

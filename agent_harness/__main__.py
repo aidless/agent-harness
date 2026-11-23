@@ -42,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--model", help="Override the model name")
     run.add_argument("--base-url", help="Override the API base URL")
     run.add_argument("--max-steps", type=int, help="Override max agent steps")
+    run.add_argument("--verify", help="Command that must exit 0 before a final answer is accepted")
     run.add_argument("--trace", help="Write a JSONL trace to this path")
     run.add_argument("--checkpoint", help="Persist loop state to this JSON file")
     run.add_argument("--resume", action="store_true",
@@ -59,6 +60,8 @@ def main(argv: list[str] | None = None) -> int:
         cfg.base_url = args.base_url
     if args.max_steps is not None:
         cfg.max_steps = args.max_steps
+    if args.verify:
+        cfg.verify_command = args.verify
     if args.trace:
         cfg.trace_path = args.trace
     if args.checkpoint:
