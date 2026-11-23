@@ -67,9 +67,9 @@ def test_bash_timeout(tmp_path):
     assert "timeout" in out
 
 
-def test_schemas_have_three_tools_with_required_params(tmp_path):
+def test_schemas_have_four_tools_with_required_params(tmp_path):
     schemas, impls = make_tools(tmp_path / "w")
-    assert set(impls) == {"bash", "read_file", "write_file"}
+    assert set(impls) == {"bash", "read_file", "write_file", "edit_file"}
     names = {s["function"]["name"] for s in schemas}
     assert names == set(impls)
     for s in schemas:

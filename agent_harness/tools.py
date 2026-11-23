@@ -1,4 +1,4 @@
-"""Built-in tools: bash, read_file, write_file, scoped to a work directory."""
+"""Built-in tools: bash, read_file, write_file, edit_file, scoped to a work directory."""
 
 from __future__ import annotations
 
@@ -50,10 +50,31 @@ def make_tools(workdir: str | Path, timeout: int = 120) -> tuple[list[dict], dic
         p.write_text(content, encoding="utf-8")
         return f"wrote {len(content)} chars to {p.relative_to(root)}"
 
+    def edit_file(path: str, old: str, new: str, replace_all: bool = False) -> str:
+        """Replace an exact substring; never rewrite the whole file."""
+        if not old:
+            return "[edit error: 'old' must be a non-empty exact substring]"
+        p = _resolve(root, path)
+        if not p.exists():
+            return f"[edit error: file not found: {path}]"
+        text = p.read_text(encoding="utf-8", errors="replace")
+        count = text.count(old)
+        if count == 0:
+            return f"[edit error: 'old' not found in {path}]"
+        if count > 1 and not replace_all:
+            return (
+                f"[edit error: 'old' matches {count} places in {path}; "
+                "use a longer unique substring or set replace_all=true]"
+            )
+        updated = text.replace(old, new) if replace_all else text.replace(old, new, 1)
+        p.write_text(updated, encoding="utf-8")
+        return f"edited {path}: replaced {count if replace_all else 1} occurrence(s)"
+
     impls: dict[str, Callable] = {
         "bash": bash,
         "read_file": read_file,
         "write_file": write_file,
+        "edit_file": edit_file,
     }
 
     schemas = [
@@ -93,6 +114,28 @@ def make_tools(workdir: str | Path, timeout: int = 120) -> tuple[list[dict], dic
                         "content": {"type": "string"},
                     },
                     "required": ["path", "content"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "edit_file",
+                "description": (
+                    "Replace an exact substring in a file (preferred over write_file for "
+                    "small changes: leaves the rest of the file byte-for-byte intact). "
+                    "Use a unique 'old' span; if it matches multiple places, either extend "
+                    "it until unique or set replace_all=true."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "old": {"type": "string"},
+                        "new": {"type": "string"},
+                        "replace_all": {"type": "boolean"},
+                    },
+                    "required": ["path", "old", "new"],
                 },
             },
         },

@@ -1,4 +1,5 @@
 Call tools by emitting exactly one JSON object: {"name": ..., "arguments": {...}}.
-arguments.command must be a real shell command. arguments.content must be the COMPLETE real file text.
+arguments.command must be a real shell command. For small fixes use edit_file(path, old, new) with old an exact substring copied from read_file; never rewrite a whole file for a one-line change.
+arguments.content for write_file must be the COMPLETE real file text.
 Never write placeholders, angle-bracket descriptions, or "...". Wait for each tool result before the next call.
 To finish, reply with one plain sentence, no JSON.

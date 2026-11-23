@@ -35,24 +35,10 @@ from agent_harness.trace import Tracer  # noqa: E402
 
 FIXTURE = Path(__file__).resolve().parent / "bugfix-project"
 
-# The corrected calc.py: fix add, keep mul/div intact (write_file overwrites
-# the whole file, so the scripted model must send the complete content).
-FIXED_CALC = '''"""Small arithmetic helpers, with a bug to find."""
-
-
-def add(a, b):
-    return a + b
-
-
-def mul(a, b):
-    return a * b
-
-
-def div(a, b):
-    if b == 0:
-        raise ValueError("division by zero")
-    return a / b
-'''
+# The bug is one line. With edit_file the scripted model fixes exactly that
+# line - the docstrings and all other functions are never rewritten.
+BUG_LINE = "    return a - b          # BUG: should be a + b"
+FIX_LINE = "    return a + b"
 
 
 def _call(call_id: int, name: str, args: dict) -> dict:
@@ -69,9 +55,9 @@ def scripted_replies(pytest_cmd: str) -> list[dict]:
         # turn 1: read the buggy file
         {"role": "assistant", "content": None,
          "tool_calls": [_call(1, "read_file", {"path": "src/calc.py"})]},
-        # turn 2: overwrite it with the complete corrected file
+        # turn 2: edit only the buggy line, leaving docstrings byte-for-byte intact
         {"role": "assistant", "content": None,
-         "tool_calls": [_call(2, "write_file", {"path": "src/calc.py", "content": FIXED_CALC})]},
+         "tool_calls": [_call(2, "edit_file", {"path": "src/calc.py", "old": BUG_LINE, "new": FIX_LINE})]},
         # turn 3: run the project's tests
         {"role": "assistant", "content": None,
          "tool_calls": [_call(3, "bash", {"command": pytest_cmd})]},

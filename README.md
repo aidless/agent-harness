@@ -115,7 +115,7 @@ stdout/stderr 怎么合并，harness 都能可靠判定通过与否。配置示�
 | `compact` | `false` | `true` 启用**两级上下文压缩**：历史将被丢弃前先用模型摘要保留关键事实（多一次 LLM 调用） |
 | `compact_after_messages` | `12` | 消息数达到该值才开始考虑压缩 |
 | `compact_keep_recent` | `4` | 压缩时保留最近多少条消息不摘要 |
-| `workdir` | `.` | 工具（bash/read_file/write_file）的工作目录 |
+| `workdir` | `.` | 工具（bash/read_file/write_file/edit_file）的工作目录 |
 | `trace_path` | `""` | 非空则把轨迹写到这里（JSONL） |
 | `checkpoint_path` | `""` | 非空则**每步**把 messages + 计数器原子落盘到该 JSON（崩溃最多丢一步） |
 | `resume` | `false` | `true` 且 checkpoint 存在时，从断点续跑；任务不匹配或文件损坏则从新开始 |
@@ -129,7 +129,8 @@ stdout/stderr 怎么合并，harness 都能可靠判定通过与否。配置示�
 |---|---|---|
 | `bash` | `command`, 可选 `timeout` | 在 `workdir` 下跑 shell 命令，返回 stdout+stderr+退出码 |
 | `read_file` | `path` | 读文件，超限截断 |
-| `write_file` | `path`, `content` | 写文件（自动建父目录） |
+| `write_file` | `path`, `content` | 整文件写（自动建父目录） |
+| `edit_file` | `path`, `old`, `new`, 可选 `replace_all` | 精确子串替换，文件其余部分逐字不动；小改动优先用它 |
 
 所有路径操作限制在 `workdir` 内，`..` 逃逸会被拒绝。
 
@@ -139,7 +140,7 @@ stdout/stderr 怎么合并，harness 都能可靠判定通过与否。配置示�
 agent_harness/
   config.py    配置加载（dataclass / yaml / env 三层）
   llm.py       OpenAI 兼容 /chat/completions 客户端（httpx，非流式）
-  tools.py     工具 schema + 实现（bash / read_file / write_file）
+  tools.py     工具 schema + 实现（bash / read_file / write_file / edit_file）
   context.py   上下文：超限先截 tool 输出 → 丢最旧消息；compact 再补一级"模型摘要"
   agent.py     Agent 主循环：LLM → tool_calls → 执行 → 回灌 → 验收关口 → 下一步
   trace.py     JSONL 轨迹记录
@@ -163,6 +164,7 @@ docs/harness-survey.md     GitHub 主流 harness 与 PLE 模板设计调研
 - **上下文管理默认字符级，可选精确 token**：默认零依赖、按字符计预算；设 `count_tokens: true`（或 `AGENT_COUNT_TOKENS=1`）即用 `tiktoken` 精确计数，只改"保留/丢弃"的分界，不改输出形状（tool 输出截断仍按字符，属粗粒度安全阀）。
 - **非流式**：一次拿完整回复，简单可靠；要低延迟首字可改流式。
 - **单轮无并发**：一个 task 一个 agent，没有多 agent / 并行工具；需要可扩展时在这个骨架上加。
+- **小改动优先 edit_file**：本地模型整文件重写 write_file 时会把 docstring 的 closing `"""` 写丢，连续三次真实 demo 都因此 SyntaxError。edit_file 只替换一个精确子串，模型无需重写未改的行；scripted_demo 用它 4 步修好 add() 且 docstring 逐字完好，独立 pytest 3 passed。
 - **模型能力决定多步任务的成败**：harness 只提供正确的工具循环与验证，不会替模型补齐推理。实测本机三个小模型在多步 bugfix 上全败：qwen2.5:7b 把操作写成伪代码文本、写文件时丢掉未改的行；qwen2.5-coder:14b 把 tool_call 塞进 content 字符串；qwen3:8b 写出语法错误的文件。同一个 qwen2.5:7b 在单步的 serve smoke 任务上却通过。这是模型侧瓶颈，不是 harness 缺陷。
 - **多步主循环已用脚本化 LLM 证明正确**：`examples/scripted_demo.py` 用一个进程内假端点按固定顺序返回 tool_calls（读文件 → 整文件覆盖修复 → 跑 pytest → 收尾），驱动真实 Agent 跑完 4 步 3 次工具调用，独立 pytest `3 passed`。这把"多步能不能成"与本机模型能力完全解耦——挂掉的是小模型，不是 harness。同一验证固化为回归测试 `tests/test_multistep_e2e.py`。要验证换更强模型的效果，改 `examples/run_demo.py` 的 `--model`/`--base-url` 即可。
 - **验收关口防谎报**：设 `verify_command` 后，模型每次给出最终答复前 harness 都真跑一遍该命令；退出码非 0 就把输出回灌给模型再修，最多 `max_verify_rounds` 轮。退出码用 shell 哨兵 `; echo __AH_VERIFY_EXIT__=$?` 从合并输出里抽，不受 stdout/stderr 混合影响。`max_steps` 用尽时若验收通过仍判成功。`examples/verify_demo.py` 端到端演示了"谎报 done→pytest 打回→修复→再验通过"，`verify_rounds=2`、独立 pytest 3 passed。

@@ -16,10 +16,11 @@ import yaml
 DEFAULT_SYSTEM_PROMPT = (
     "You are a helpful agent. You have tools that run commands and manage "
     "files in a workspace. Use them when they help. "
-    "read_file returns the whole file; write_file OVERWRITES the whole file, "
-    "dropping anything you do not include. Before editing an existing file, "
-    "read it first, then write back the COMPLETE corrected content, not just "
-    "the changed lines."
+    "read_file returns the whole file. To change part of an existing file, "
+    "use edit_file(path, old, new): it replaces one exact substring and leaves "
+    "the rest byte-for-byte intact - prefer it for small fixes. write_file "
+    "OVERWRITES the whole file; only use it when creating a file or rewriting "
+    "nearly all of it."
 )
 
 

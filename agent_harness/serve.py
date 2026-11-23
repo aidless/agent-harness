@@ -207,7 +207,35 @@ def remote_tools(rs: RemoteSession):
             return f"[write error: {r.get('error', 'unknown')}]"
         return f"wrote {len(content)} chars to {path}"
 
-    impls = {"bash": bash, "read_file": read_file, "write_file": write_file}
+    def edit_file(path: str, old: str, new: str, replace_all: bool = False) -> str:
+        """Replace an exact substring in the task container, reusing read/write frames."""
+        if not old:
+            return "[edit error: 'old' must be a non-empty exact substring]"
+        r = rs.request({"type": "read_file", "path": path})
+        if not r.get("ok"):
+            return f"[edit error: file not found: {path}]"
+        text = _b64decode(r.get("content_b64"))
+        count = text.count(old)
+        if count == 0:
+            return f"[edit error: 'old' not found in {path}]"
+        if count > 1 and not replace_all:
+            return (
+                f"[edit error: 'old' matches {count} places in {path}; "
+                "use a longer unique substring or set replace_all=true]"
+            )
+        updated = text.replace(old, new) if replace_all else text.replace(old, new, 1)
+        payload = _b64encode(updated)
+        if len(payload) > 10 * 1024 * 1024:
+            return "[edit error: payload over the 10 MB limit]"
+        w = rs.request(
+            {"type": "write_file", "path": path, "content_b64": payload, "append": False}
+        )
+        if not w.get("ok"):
+            return f"[edit error: {w.get('error', 'unknown')}]"
+        return f"edited {path}: replaced {count if replace_all else 1} occurrence(s)"
+
+    impls = {"bash": bash, "read_file": read_file, "write_file": write_file,
+             "edit_file": edit_file}
     return schemas, impls
 
 
