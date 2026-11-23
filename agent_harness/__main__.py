@@ -43,6 +43,9 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--base-url", help="Override the API base URL")
     run.add_argument("--max-steps", type=int, help="Override max agent steps")
     run.add_argument("--trace", help="Write a JSONL trace to this path")
+    run.add_argument("--checkpoint", help="Persist loop state to this JSON file")
+    run.add_argument("--resume", action="store_true",
+                     help="Continue from --checkpoint if it holds a matching task")
     run.add_argument("--json", action="store_true", help="Print full result as JSON")
 
     args = parser.parse_args(argv)
@@ -58,6 +61,10 @@ def main(argv: list[str] | None = None) -> int:
         cfg.max_steps = args.max_steps
     if args.trace:
         cfg.trace_path = args.trace
+    if args.checkpoint:
+        cfg.checkpoint_path = args.checkpoint
+    if args.resume:
+        cfg.resume = True
 
     task = read_task(args)
     if not task:

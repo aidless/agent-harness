@@ -29,3 +29,7 @@ max_tool_result_chars: 12000
 
 workdir: .
 trace_path: ""
+
+# checkpoint/resume: 每步把 messages+计数器落盘，进程崩溃后 --resume 可续跑
+# checkpoint_path: .agent-checkpoint.json
+# resume: false

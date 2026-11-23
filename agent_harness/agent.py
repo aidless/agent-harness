@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+from pathlib import Path
 from typing import Any
 
 from .context import compact, fit, should_compact, tool_result, token_sizer
@@ -92,23 +94,82 @@ class Agent:
         clean = _VERIFY_RE.sub("", output).strip()
         return passed, clean
 
-    def run(self, task: str) -> dict:
-        messages: list[dict] = [
-            {"role": "system", "content": self.cfg.system_prompt},
-            {"role": "user", "content": task},
-        ]
-        result = {
-            "answer": "",
-            "steps": 0,
-            "tool_calls": 0,
-            "verify_rounds": 0,
-            "finished": False,
-            "error": "",
+    def _checkpoint(self, task: str, messages: list[dict], result: dict,
+                    step: int) -> None:
+        """Persist loop state to checkpoint_path (atomic write). Best effort."""
+        path = getattr(self.cfg, "checkpoint_path", "") or ""
+        if not path:
+            return
+        state = {
+            "task": task,
+            "steps": step,
             "messages": messages,
+            "answer": result.get("answer", ""),
+            "tool_calls": result.get("tool_calls", 0),
+            "verify_rounds": result.get("verify_rounds", 0),
+            "finished": result.get("finished", False),
+            "error": result.get("error", ""),
         }
+        try:
+            target = Path(path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp = target.with_name(target.name + ".tmp")
+            tmp.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, target)  # atomic: a crash never leaves a half-written file
+        except OSError as exc:
+            self.tracer.log("checkpoint_failed", error=str(exc)[:300])
+
+    def _restore(self, task: str) -> tuple[list[dict], dict, int] | None:
+        """Load a checkpoint for this exact task. Corrupt/mismatched => None."""
+        path = getattr(self.cfg, "checkpoint_path", "") or ""
+        if not path or not getattr(self.cfg, "resume", False):
+            return None
+        try:
+            state = json.loads(Path(path).read_text(encoding="utf-8"))
+            if not isinstance(state, dict) or state.get("task") != task:
+                return None
+            messages = state["messages"]
+            if not isinstance(messages, list):
+                return None
+            steps = int(state.get("steps", 0))
+            result = {
+                "answer": state.get("answer", ""),
+                "steps": steps,
+                "tool_calls": int(state.get("tool_calls", 0)),
+                "verify_rounds": int(state.get("verify_rounds", 0)),
+                "finished": bool(state.get("finished", False)),
+                "error": state.get("error", ""),
+                "messages": messages,
+            }
+            return messages, result, steps
+        except (OSError, ValueError, TypeError, KeyError):
+            return None
+
+    def run(self, task: str) -> dict:
+        restored = self._restore(task)
+        if restored is not None and restored[1]["finished"]:
+            return restored[1]  # already done: do not call the LLM again
+        if restored is not None:
+            messages, result, start = restored
+            result["error"] = ""  # a resumed run drops the prior stop reason
+        else:
+            messages: list[dict] = [
+                {"role": "system", "content": self.cfg.system_prompt},
+                {"role": "user", "content": task},
+            ]
+            result = {
+                "answer": "",
+                "steps": 0,
+                "tool_calls": 0,
+                "verify_rounds": 0,
+                "finished": False,
+                "error": "",
+                "messages": messages,
+            }
+            start = 0
         max_verify_rounds = getattr(self.cfg, "max_verify_rounds", 0)
         try:
-            for step in range(1, self.cfg.max_steps + 1):
+            for step in range(start + 1, self.cfg.max_steps + 1):
                 result["steps"] = step
                 self._maybe_compact(messages)
                 window = fit(
@@ -151,6 +212,8 @@ class Agent:
                     messages.append(tool_result(call, output, self.cfg.max_tool_result_chars))
                     self.tracer.log("tool_call", step=step, name=name, args=args,
                                     output=output[:1000])
+                # Persist after each step so a crash mid-task loses at most one step.
+                self._checkpoint(task, messages, result, step)
             else:
                 # Out of steps: a passing verifier still counts as success.
                 passed, output = self._verify()
@@ -164,6 +227,8 @@ class Agent:
         except LLMError as exc:
             result["error"] = f"LLM error: {exc}"
             self.tracer.log("error", error=result["error"])
+        # Final state (finished / error / max_steps) must also be durable.
+        self._checkpoint(task, messages, result, result["steps"])
         return result
 
     def _finish_with_verify(self, result: dict, messages: list[dict],

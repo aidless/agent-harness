@@ -117,6 +117,8 @@ stdout/stderr 怎么合并，harness 都能可靠判定通过与否。配置示�
 | `compact_keep_recent` | `4` | 压缩时保留最近多少条消息不摘要 |
 | `workdir` | `.` | 工具（bash/read_file/write_file）的工作目录 |
 | `trace_path` | `""` | 非空则把轨迹写到这里（JSONL） |
+| `checkpoint_path` | `""` | 非空则**每步**把 messages + 计数器原子落盘到该 JSON（崩溃最多丢一步） |
+| `resume` | `false` | `true` 且 checkpoint 存在时，从断点续跑；任务不匹配或文件损坏则从新开始 |
 
 环境变量覆盖示例：`AGENT_MODEL=qwen2.5:7b AGENT_MAX_STEPS=10 python -m agent_harness task "..."`。
 
@@ -164,6 +166,7 @@ docs/harness-survey.md     GitHub 主流 harness 与 PLE 模板设计调研
 - **多步主循环已用脚本化 LLM 证明正确**：`examples/scripted_demo.py` 用一个进程内假端点按固定顺序返回 tool_calls（读文件 → 整文件覆盖修复 → 跑 pytest → 收尾），驱动真实 Agent 跑完 4 步 3 次工具调用，独立 pytest `3 passed`。这把"多步能不能成"与本机模型能力完全解耦——挂掉的是小模型，不是 harness。同一验证固化为回归测试 `tests/test_multistep_e2e.py`。要验证换更强模型的效果，改 `examples/run_demo.py` 的 `--model`/`--base-url` 即可。
 - **验收关口防谎报**：设 `verify_command` 后，模型每次给出最终答复前 harness 都真跑一遍该命令；退出码非 0 就把输出回灌给模型再修，最多 `max_verify_rounds` 轮。退出码用 shell 哨兵 `; echo __AH_VERIFY_EXIT__=$?` 从合并输出里抽，不受 stdout/stderr 混合影响。`max_steps` 用尽时若验收通过仍判成功。`examples/verify_demo.py` 端到端演示了"谎报 done→pytest 打回→修复→再验通过"，`verify_rounds=2`、独立 pytest 3 passed。
 - **两级上下文压缩**：`compact: true` 时，历史将被 `fit()` 丢弃前先用模型摘要成一条短 note（保留文件路径、失败、待办），系统提示与最近 `compact_keep_recent` 条原样保留；摘要调用失败自动回退到普通 `fit()`。这补上了"只截断丢弃"会丢失长任务历史的问题，代价是每次压缩多一次 LLM 调用。默认关闭。
+- **断点续跑（checkpoint/resume）**：设 `checkpoint_path` 后，每步把 `messages` + 计数器（`steps`/`tool_calls`/`verify_rounds`）原子落盘（临时文件 + `os.replace`，崩溃不留半截文件），崩溃最多丢一步；下次带 `--resume`（或 `resume: true`）同一任务即接着跑，已执行的工具不重放、已完成的回合不重复调模型。checkpoint 里 `task` 不匹配或文件损坏时自动从头开始。CLI 用 `agent-harness task ... --checkpoint run.json --resume`。
 - **系统提示词要短**：qwen2.5:7b 在 `temperature=0` 下，若 system prompt 含 "Verify your work by running the project's tests ... and fix whatever fails" 一类句子，会直接空回复（`content=''`, `tool_calls=0`），5/5 可复现；删掉该句即恢复。默认提示词已避开。
 
 ## 与竞赛的关系
