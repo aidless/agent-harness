@@ -145,7 +145,7 @@ agent_harness/
   serve.py     PLE v1 WebSocket 服务端（工具在远端容器执行）
   __main__.py  CLI 入口
 config.example.yaml
-tests/                     单元测试（74 个，纯 mock，不依赖模型端点）
+tests/                     单元测试（79 个，纯 mock，不依赖模型端点）
 tests/serve_smoke.py       mock 评测器，端到端自测 serve 层
 tests/test_multistep_e2e.py  脚本化 LLM 驱动的多步 bugfix 端到端测试
 examples/run_demo.py       多步 bugfix 演示（用真实 ollama 模型）
