@@ -49,7 +49,20 @@ def main(argv: list[str] | None = None) -> int:
                      help="Continue from --checkpoint if it holds a matching task")
     run.add_argument("--json", action="store_true", help="Print full result as JSON")
 
+    bench = sub.add_parser("bench", help="Run a JSONL task list and summarize score + cost")
+    bench.add_argument("--tasks", required=True, help="JSONL file, one task per line")
+    bench.add_argument("--out", required=True, help="Directory for per-task JSON and summary.json")
+    bench.add_argument("--config", "-c", help="YAML config file")
+    bench.add_argument("--workdir", "-w", help="Base work directory (per-task workdir overrides)")
+    bench.add_argument("--model", help="Override the model name")
+    bench.add_argument("--base-url", help="Override the API base URL")
+    bench.add_argument("--max-steps", type=int, help="Override max agent steps")
+
     args = parser.parse_args(argv)
+
+    if args.command == "bench":
+        from .bench import run_bench
+        return run_bench(args)
 
     cfg = Config.load(args.config)
     if args.workdir:

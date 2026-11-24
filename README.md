@@ -123,6 +123,27 @@ stdout/stderr 怎么合并，harness 都能可靠判定通过与否。配置示�
 
 环境变量覆盖示例：`AGENT_MODEL=qwen2.5:7b AGENT_MAX_STEPS=10 python -m agent_harness task "..."`。
 
+### 批量评测（bench）
+
+单任务演示之外，`bench` 子命令跑一批任务并汇总分数/成本，用来做 cross-model 对比和 score-vs-cost 曲线。任务清单是 JSONL（空行与 `#` 注释会跳过）：
+
+```
+{"id": "bugfix", "task": "...", "workdir": "/tmp/t1", "verify_command": "python3 -m pytest -q", "max_steps": 12}
+{"id": "readme", "task": "...", "workdir": "/tmp/t2", "max_steps": 6}
+```
+
+`id` / `task` 必填；`workdir` / `verify_command` / `max_steps` 是可选的单任务覆盖（其余字段走全局 config）。跑法：
+
+```
+python -m agent_harness bench \
+  --tasks tasks.jsonl --out results/ \
+  --model qwen3:8b --base-url http://127.0.0.1:11434/v1
+```
+
+每个任务写 `<out>/<id>.json`（含 `score` / `finished` / `steps` / `tool_calls` / `verify_rounds` / `error` / `input_tokens` / `output_tokens` / `seconds`），另写 `<out>/summary.json`（`pass_rate` / 均值 / `per_task`）。`score=1` 当且仅当 agent 正常结束且验收通过。换 `--model` 再跑一遍即得模型对比数据。
+
+真实冒烟（qwen3:4b-fast，2 任务）：`pass_rate=0.5`、`mean_steps=4.5`、`mean_input_tokens=7075`、`mean_output_tokens=9140`、`mean_seconds=169.5`——只读问答 2 步通过，多步改写 7 步后验收 2 轮仍失败，正是 score-vs-cost 要暴露的差距。
+
 ## 内置工具
 
 | 工具 | 参数 | 行为 |
@@ -145,9 +166,10 @@ agent_harness/
   agent.py     Agent 主循环：LLM → tool_calls → 执行 → 回灌 → 验收关口 → 下一步
   trace.py     JSONL 轨迹记录
   serve.py     PLE v1 WebSocket 服务端（工具在远端容器执行）
-  __main__.py  CLI 入口
+  bench.py     批量评测：JSONL 任务清单 → 逐任务跑 → 分数/步数/token/耗时汇总
+  __main__.py  CLI 入口（task / serve / bench）
 config.example.yaml
-tests/                     单元测试（101 个，纯 mock，不依赖模型端点）
+tests/                     单元测试（108 个，纯 mock，不依赖模型端点）
 tests/serve_smoke.py       mock 评测器，端到端自测 serve 层
 tests/test_multistep_e2e.py  脚本化 LLM 驱动的多步 bugfix 端到端测试
 examples/run_demo.py       多步 bugfix 演示（用真实 ollama 模型）
