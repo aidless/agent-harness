@@ -147,7 +147,7 @@ agent_harness/
   serve.py     PLE v1 WebSocket 服务端（工具在远端容器执行）
   __main__.py  CLI 入口
 config.example.yaml
-tests/                     单元测试（79 个，纯 mock，不依赖模型端点）
+tests/                     单元测试（101 个，纯 mock，不依赖模型端点）
 tests/serve_smoke.py       mock 评测器，端到端自测 serve 层
 tests/test_multistep_e2e.py  脚本化 LLM 驱动的多步 bugfix 端到端测试
 examples/run_demo.py       多步 bugfix 演示（用真实 ollama 模型）
@@ -166,7 +166,7 @@ docs/harness-survey.md     GitHub 主流 harness 与 PLE 模板设计调研
 - **单轮无并发**：一个 task 一个 agent，没有多 agent / 并行工具；需要可扩展时在这个骨架上加。
 - **小改动优先 edit_file（真实模型已验证）**：本地模型整文件重写 write_file 时会把 docstring 的 closing `"""` 写丢，qwen3:8b 连续三次真实 demo 都因此 SyntaxError。改用 edit_file 后同一模型**一次跑通**：5 步 4 次工具调用（`pytest` → `read_file` → `edit_file` 精确替换 `    return a - b`→`    return a + b` → `pytest`），验收回灌第 1 轮即过，docstring 逐字完好，独立 pytest `3 passed`。工具形态比提示词更能约束模型的输出边界。
 - **模型能力决定多步任务的成败**：harness 只提供正确的工具循环与验证，不会替模型补齐推理。实测本机小模型**用 write_file 做多步 bugfix 时全败**：qwen2.5:7b 把操作写成伪代码文本、还会丢掉未改的行；qwen2.5-coder:14b 把 tool_call 塞进 content 字符串；qwen3:8b 写出语法错误的文件（docstring 引号被写坏）。同一批模型在单步的 serve smoke 任务上却通过。给出 edit_file 后 qwen3:8b 首次通过——瓶颈一半在“整文件重写”这个输出形态，工具设计能补掉一部分。
-- **多步主循环已用脚本化 LLM 证明正确**：`examples/scripted_demo.py` 用一个进程内假端点按固定顺序返回 tool_calls（读文件 → 整文件覆盖修复 → 跑 pytest → 收尾），驱动真实 Agent 跑完 4 步 3 次工具调用，独立 pytest `3 passed`。这把"多步能不能成"与本机模型能力完全解耦——挂掉的是小模型，不是 harness。同一验证固化为回归测试 `tests/test_multistep_e2e.py`。要验证换更强模型的效果，改 `examples/run_demo.py` 的 `--model`/`--base-url` 即可。
+- **多步主循环已用脚本化 LLM 证明正确**：`examples/scripted_demo.py` 用一个进程内假端点按固定顺序返回 tool_calls（读文件 → `edit_file` 精确改一行 → 跑 pytest → 收尾），驱动真实 Agent 跑完 4 步 3 次工具调用，独立 pytest `3 passed`。这把"多步能不能成"与本机模型能力完全解耦——挂掉的是小模型，不是 harness。同一验证固化为回归测试 `tests/test_multistep_e2e.py`。要验证换更强模型的效果，改 `examples/run_demo.py` 的 `--model`/`--base-url` 即可。
 - **验收关口防谎报**：设 `verify_command` 后，模型每次给出最终答复前 harness 都真跑一遍该命令；退出码非 0 就把输出回灌给模型再修，最多 `max_verify_rounds` 轮。退出码用 shell 哨兵 `; echo __AH_VERIFY_EXIT__=$?` 从合并输出里抽，不受 stdout/stderr 混合影响。`max_steps` 用尽时若验收通过仍判成功。`examples/verify_demo.py` 端到端演示了"谎报 done→pytest 打回→修复→再验通过"，`verify_rounds=2`、独立 pytest 3 passed。
 - **两级上下文压缩**：`compact: true` 时，历史将被 `fit()` 丢弃前先用模型摘要成一条短 note（保留文件路径、失败、待办），系统提示与最近 `compact_keep_recent` 条原样保留；摘要调用失败自动回退到普通 `fit()`。这补上了"只截断丢弃"会丢失长任务历史的问题，代价是每次压缩多一次 LLM 调用。默认关闭。
 - **断点续跑（checkpoint/resume）**：设 `checkpoint_path` 后，每步把 `messages` + 计数器（`steps`/`tool_calls`/`verify_rounds`）原子落盘（临时文件 + `os.replace`，崩溃不留半截文件），崩溃最多丢一步；下次带 `--resume`（或 `resume: true`）同一任务即接着跑，已执行的工具不重放、已完成的回合不重复调模型。checkpoint 里 `task` 不匹配或文件损坏时自动从头开始。CLI 用 `agent-harness task ... --checkpoint run.json --resume`。
